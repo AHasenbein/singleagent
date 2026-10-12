@@ -709,49 +709,49 @@ if st.button("Build Evidence Ledger", type="primary") and question.strip():
         st.caption(f"{len(stored_records)} evidence records stored in {EVIDENCE_DB}")
 
 
-"""
-ELP WEEK 5 — TEAM 1 — STUDENT CODE
-Single-agent report generation
-
-==================== EXACT SETUP INSTRUCTIONS ====================
-1. OPEN the SAME Streamlit Python file used for Weeks 3 and 4, for YOUR team.
-2. Make sure it already contains, IN THIS ORDER:
-     (a) the completed Week 3 application, imports, tools and graphs;
-     (b) the completed Week 4 evidence extension, including its Streamlit UI.
-3. Scroll to the VERY BOTTOM of that combined file, below the final Week 4
-   st.caption(...) / st.dataframe(...) line. Leave two blank lines.
-4. COPY EVERYTHING IN THIS WEEK 5 FILE, including its imports, and PASTE there.
-   Alternatively, if you already pasted a previous Week 5 extension, REPLACE
-   that old Week 5 extension; do NOT append two Week 5 copies.
-5. SAVE the combined file. Run it from a terminal with:
-     streamlit run YOUR_EXISTING_APP_FILE.py
-6. Enter a research question in the existing question input, then click
-   Run Full Report Pipeline in the new Week 5 section near the bottom.
-7. Check that the output displays a complete 10-section report AND that SQLite
-   contains both evidence and a saved report in the 'reports' table.
-
-IMPORTANT DEPENDENCIES:
-- This extension is NOT a standalone Python program. It expects Week 3/4 to
-  provide sqlite3, json, st, EVIDENCE_DB, question, call_model_json,
-  Week4ResearchState, StateGraph, START, END, and the nodes listed below.
-- Team 1 reuses: plan_node, research_node, evidence_node.
-- Team 2 reuses: supervisor_node, specialists_node, evidence_store_node.
-- Complete ALL Week 4 student TODOs first; unfinished Week 4 code prevents
-  Week 5 from obtaining evidence.
-- DO NOT mix Team 1 and Team 2 files: their graph state and node names differ.
-- This week keeps existing SQLite storage. It creates a SECOND table 'reports'
-  inside the SAME database file (not a separate database).
-- Existing Week 3 and Week 4 UI buttons are preserved. The Week 5 button is
-  the one that runs the complete new pipeline end-to-end.
-- You will need your existing LLM and search API configuration to make a live run.
-
-STUDENT WORK: Complete TODO 0 through TODO 5 in order. Functions marked pass are exercises and will not work until completed. Use the instructor file only for checking or teaching solutions.
-
-WEEK 5 TARGET: single-agent Planner → Research → Evidence → Report
-Deliverable: the first complete DRAFT report; automated citation verification and
-quality review are deliberately reserved for Week 6.
-==================================================================
-"""
+# ======================================================================
+# ELP WEEK 5 — TEAM 1 — STUDENT CODE
+# Single-agent report generation
+#
+# ==================== EXACT SETUP INSTRUCTIONS ====================
+# 1. OPEN the SAME Streamlit Python file used for Weeks 3 and 4, for YOUR team.
+# 2. Make sure it already contains, IN THIS ORDER:
+#      (a) the completed Week 3 application, imports, tools and graphs;
+#      (b) the completed Week 4 evidence extension, including its Streamlit UI.
+# 3. Scroll to the VERY BOTTOM of that combined file, below the final Week 4
+#    st.caption(...) / st.dataframe(...) line. Leave two blank lines.
+# 4. COPY EVERYTHING IN THIS WEEK 5 FILE, including its imports, and PASTE there.
+#    Alternatively, if you already pasted a previous Week 5 extension, REPLACE
+#    that old Week 5 extension; do NOT append two Week 5 copies.
+# 5. SAVE the combined file. Run it from a terminal with:
+#      streamlit run YOUR_EXISTING_APP_FILE.py
+# 6. Enter a research question in the existing question input, then click
+#    Run Full Report Pipeline in the new Week 5 section near the bottom.
+# 7. Check that the output displays a complete 10-section report AND that SQLite
+#    contains both evidence and a saved report in the 'reports' table.
+#
+# IMPORTANT DEPENDENCIES:
+# - This extension is NOT a standalone Python program. It expects Week 3/4 to
+#   provide sqlite3, json, st, EVIDENCE_DB, question, call_model_json,
+#   Week4ResearchState, StateGraph, START, END, and the nodes listed below.
+# - Team 1 reuses: plan_node, research_node, evidence_node.
+# - Team 2 reuses: supervisor_node, specialists_node, evidence_store_node.
+# - Complete ALL Week 4 student TODOs first; unfinished Week 4 code prevents
+#   Week 5 from obtaining evidence.
+# - DO NOT mix Team 1 and Team 2 files: their graph state and node names differ.
+# - This week keeps existing SQLite storage. It creates a SECOND table 'reports'
+#   inside the SAME database file (not a separate database).
+# - Existing Week 3 and Week 4 UI buttons are preserved. The Week 5 button is
+#   the one that runs the complete new pipeline end-to-end.
+# - You will need your existing LLM and search API configuration to make a live run.
+#
+# STUDENT WORK: Complete TODO 0 through TODO 5 in order. Functions marked pass are exercises and will not work until completed. Use the instructor file only for checking or teaching solutions.
+#
+# WEEK 5 TARGET: single-agent Planner → Research → Evidence → Report
+# Deliverable: the first complete DRAFT report; automated citation verification and
+# quality review are deliberately reserved for Week 6.
+# ==================================================================
+# ======================================================================
 
 # UTC timestamp is used when each report is stored in SQLite.
 from datetime import datetime, timezone
@@ -776,12 +776,23 @@ def init_report_db():
 # WHAT THIS DOES — DATABASE WRITE: Saves question, generated markdown, evidence count, timestamp; returns report ID.
 def save_report(question: str, report_markdown: str, evidence_count: int) -> int:
     """Save one generated report and return its database id."""
-    # STUDENT: Replace the `pass` in this function with real code.
     # TODO 0 — REPORT PERSISTENCE
     # Insert the question, report_markdown, evidence_count, and current UTC time
     # into the reports table using parameterized SQL.
     # Return cursor.lastrowid.
-    pass
+    with sqlite3.connect(EVIDENCE_DB) as conn:
+        cursor = conn.execute(
+            "INSERT INTO reports (question, report_markdown, evidence_count, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                question,
+                report_markdown,
+                evidence_count,
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            ),
+        )
+        conn.commit()
+        return cursor.lastrowid
 
 
 # WHAT THIS DOES — DATABASE READ: Loads previously generated reports, most recent first, for the UI.
@@ -861,14 +872,36 @@ def build_evidence_packet(evidence_records: list[dict]) -> list[dict]:
 # WHAT THIS DOES — TEAM 1 MODEL STEP: Converts numbered records into nine narrative report sections.
 def generate_report(question: str, evidence_records: list[dict]) -> dict:
     """Generate the report from evidence — not from the full conversation history."""
-    # STUDENT: Replace the `pass` below with the report-generation implementation.
     # TODO 1 — REPORT GENERATION
     # 1. Call build_evidence_packet(evidence_records).
     # 2. Build a prompt containing the research question and json.dumps(...packet...).
     # 3. Call call_model_json(REPORT_SYSTEM_PROMPT, prompt).
     # 4. Make sure every key in REPORT_SECTION_KEYS exists.
     # 5. Return the report dictionary.
-    pass
+    packet = build_evidence_packet(evidence_records)
+
+    prompt = f"""
+Research question:
+{question}
+
+Evidence Records (cite them by evidence_id, e.g. [E1]):
+{json.dumps(packet, indent=2, default=str)}
+""".strip()
+
+    output = call_model_json(REPORT_SYSTEM_PROMPT, prompt)
+    if not isinstance(output, dict):
+        raise ValueError("Report generator must return a JSON object.")
+
+    report = {}
+    for key, title in REPORT_SECTION_KEYS:
+        value = output.get(key)
+        # The model sometimes returns a section as a list of points.
+        if isinstance(value, list):
+            value = "\n".join(f"- {point}" for point in value)
+        value = str(value or "").strip()
+        report[key] = value or f"No {title.lower()} could be supported by the collected evidence."
+
+    return report
 
 
 # WHAT THIS DOES — REFERENCES: Creates citation legend from original URLs, not invented model references.
@@ -898,11 +931,14 @@ def render_report_markdown(report: dict, evidence_records: list[dict]) -> str:
 #     report: dict
 #     report_markdown: str
 #     report_id: int
-
+class Week5ResearchState(Week4ResearchState):
+    report: dict
+    report_markdown: str
+    report_id: int
 
 
 # WHAT THIS DOES — TEAM 1 GRAPH NODE: Runs model report generation, formats it, saves to SQLite.
-def report_node(state):
+def report_node(state: Week5ResearchState) -> dict:
     """Turn this run's evidence into a saved complete report."""
     # TODO 3 — CONNECT EVIDENCE TO REPORT
     # 1. Read state["evidence_records"].
@@ -911,7 +947,22 @@ def report_node(state):
     # 4. Render it as markdown.
     # 5. Save it to SQLite.
     # 6. Return report, report_markdown, and report_id.
-    pass
+    evidence_records = state.get("evidence_records") or []
+    if not evidence_records:
+        raise ValueError(
+            "No evidence records were extracted for this question, so no report "
+            "can be written. Try a more specific question or check the research tools."
+        )
+
+    report = generate_report(state["question"], evidence_records)
+    report_markdown = render_report_markdown(report, evidence_records)
+    report_id = save_report(state["question"], report_markdown, len(evidence_records))
+
+    return {
+        "report": report,
+        "report_markdown": report_markdown,
+        "report_id": report_id,
+    }
 
 
 # WHAT THIS DOES — WORKFLOW WIRING: Reuses Week 3/4 nodes and adds Week 5 report/synthesis at the end.
@@ -921,7 +972,20 @@ def build_week5_graph():
     # Reuse plan_node, research_node, and evidence_node.
     # Add report_node after evidence_node.
     # Use your Week5ResearchState.
-    pass
+    graph = StateGraph(Week5ResearchState)
+
+    graph.add_node("plan", plan_node)
+    graph.add_node("research", research_node)
+    graph.add_node("evidence", evidence_node)
+    graph.add_node("report", report_node)
+
+    graph.add_edge(START, "plan")
+    graph.add_edge("plan", "research")
+    graph.add_edge("research", "evidence")
+    graph.add_edge("evidence", "report")
+    graph.add_edge("report", END)
+
+    return graph.compile()
 
 
 week5_graph = build_week5_graph()
@@ -941,5 +1005,33 @@ if st.button("Run Full Report Pipeline", type="primary") and question.strip():
     #   - report_markdown with st.markdown(...)
     #   - evidence records in an expander
     #   - saved reports from SQLite in another expander
-    pass
+    week5_state = {
+        "question": question.strip(),
+        "research_plan": [],
+        "research_results": [],
+        "response": "",
+        "evidence_records": [],
+        "report": {},
+        "report_markdown": "",
+        "report_id": 0,
+    }
+
+    try:
+        with st.spinner("Planning, researching, extracting evidence, and writing the report..."):
+            report_result = week5_graph.invoke(week5_state)
+    except Exception as error:
+        st.error(f"The Week 5 report pipeline could not finish: {error}")
+    else:
+        st.success(f"Report #{report_result['report_id']} saved to {EVIDENCE_DB}.")
+        st.markdown(report_result["report_markdown"])
+
+        with st.expander(f"Evidence used ({len(report_result['evidence_records'])} records)"):
+            st.json(build_evidence_packet(report_result["evidence_records"]))
+
+        with st.expander("Saved reports (SQLite)"):
+            for saved in load_reports():
+                st.markdown(
+                    f"**#{saved['id']}** — {saved['question']}  \n"
+                    f"{saved['evidence_count']} evidence records · {saved['created_at']}"
+                )
 
