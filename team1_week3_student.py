@@ -461,3 +461,485 @@ if st.button("Research", type="primary") and question.strip():
 
         st.subheader("Response")
         st.write(result["response"])
+
+
+# ======================================================================
+# ELP Week 4 — Team 1 Student Extension
+# Evidence & Traceability + SQLite
+# ======================================================================
+
+# ---------------- Week 4: Evidence & Traceability ----------------
+
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+
+EVIDENCE_DB = "team1_evidence.db"
+
+
+def init_evidence_db():
+    """Create the Week 4 evidence table if it does not exist."""
+    with sqlite3.connect(EVIDENCE_DB) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS evidence (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                claim TEXT NOT NULL,
+                source TEXT NOT NULL,
+                url TEXT NOT NULL,
+                publication_date TEXT,
+                source_type TEXT NOT NULL,
+                evidence TEXT NOT NULL,
+                confidence TEXT,
+                related_company TEXT,
+                report_section TEXT,
+                UNIQUE(claim, url)
+            )
+        """)
+        conn.commit()
+
+
+def save_evidence_records(records: list[dict]):
+    """Save validated evidence records to SQLite."""
+    columns = [
+        "claim",
+        "source",
+        "url",
+        "publication_date",
+        "source_type",
+        "evidence",
+        "confidence",
+        "related_company",
+        "report_section",
+    ]
+    rows = [tuple(record.get(col) for col in columns) for record in records]
+
+    with sqlite3.connect(EVIDENCE_DB) as conn:
+        conn.executemany(
+            f"INSERT OR IGNORE INTO evidence ({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            rows,
+        )
+        conn.commit()
+
+
+def load_evidence_records() -> list[dict]:
+    """Read the evidence ledger back from SQLite."""
+    with sqlite3.connect(EVIDENCE_DB) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM evidence ORDER BY id").fetchall()
+        return [dict(row) for row in rows]
+
+
+init_evidence_db()
+
+
+class Week4ResearchState(ResearchState):
+    evidence_records: list[dict]
+
+
+EVIDENCE_SYSTEM_PROMPT = """
+You are the evidence extraction step in a business research workflow.
+
+Convert useful research results into structured Evidence Records.
+
+Return ONLY valid JSON in exactly this shape:
+{
+  "records": [
+    {
+      "claim": "...",
+      "source": "...",
+      "url": "...",
+      "publication_date": null,
+      "source_type": "...",
+      "evidence": "...",
+      "confidence": "high",
+      "related_company": null,
+      "report_section": null
+    }
+  ]
+}
+
+Rules:
+- claim = a factual statement supported by the source.
+- evidence = the passage that supports the claim.
+- source and url must come from the supplied research.
+- Do not guess a publication date.
+- confidence must be high, medium, or low.
+- Do not create evidence for unsupported conclusions.
+""".strip()
+
+
+def _extract_one(item: dict, result: dict) -> list[dict]:
+    """Ask the model for evidence records from a single source result."""
+    source_payload = {
+        "task": item.get("task"),
+        "source_type": item.get("source_type"),
+        "title": result.get("title"),
+        "url": result.get("url"),
+        "content": result.get("content"),
+        "published_date": result.get("published_date"),
+    }
+
+    try:
+        output = call_model_json(
+            EVIDENCE_SYSTEM_PROMPT,
+            json.dumps(source_payload, indent=2, default=str),
+        )
+    except Exception:
+        # One failed model call should not sink the whole ledger.
+        return []
+
+    extracted = output.get("records") if isinstance(output, dict) else None
+    if not isinstance(extracted, list):
+        return []
+
+    records = []
+    for record in extracted:
+        if not isinstance(record, dict):
+            continue
+        # Traceability: never let the model invent provenance.
+        record["url"] = source_payload["url"]
+        record["source"] = record.get("source") or source_payload["title"]
+        record["source_type"] = source_payload["source_type"]
+        record["publication_date"] = source_payload["published_date"]
+        if not record.get("related_company"):
+            record["related_company"] = item.get("ticker")
+        records.append(record)
+    return records
+
+
+def extract_evidence_records(research_results: list[dict]) -> list[dict]:
+    """Turn Week 3 research results into structured evidence records."""
+    jobs = [
+        (item, result)
+        for item in research_results
+        for result in item.get("results", [])
+        if isinstance(result, dict) and "error" not in result
+    ]
+
+    # Model calls are slow and independent, so run them in parallel.
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        batches = pool.map(lambda job: _extract_one(*job), jobs)
+
+    return [record for batch in batches for record in batch]
+
+
+def validate_evidence_records(records: list[dict]) -> list[dict]:
+    """Keep only records with the minimum Week 4 evidence fields."""
+    required = ["claim", "source", "url", "source_type", "evidence"]
+
+    validated = []
+    seen = set()
+
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if not all(str(record.get(field) or "").strip() for field in required):
+            continue
+
+        key = (record["claim"].strip().lower(), record["url"].strip())
+        if key in seen:
+            continue
+        seen.add(key)
+
+        if record.get("confidence") not in {"high", "medium", "low"}:
+            record["confidence"] = None
+        validated.append(record)
+
+    return validated
+
+
+def evidence_node(state: ResearchState) -> dict:
+    """Week 4: extract, validate, and persist evidence from Week 3 research."""
+    raw_records = extract_evidence_records(state["research_results"])
+    validated = validate_evidence_records(raw_records)
+    save_evidence_records(validated)
+    return {"evidence_records": validated}
+
+
+def build_week4_graph():
+    """
+    Extend the existing Week 3 Team 1 flow:
+
+    Question -> Planner -> Research -> Evidence Extraction -> SQLite Ledger
+    """
+    graph = StateGraph(Week4ResearchState)
+
+    graph.add_node("plan", plan_node)
+    graph.add_node("research", research_node)
+    graph.add_node("evidence", evidence_node)
+
+    graph.add_edge(START, "plan")
+    graph.add_edge("plan", "research")
+    graph.add_edge("research", "evidence")
+    graph.add_edge("evidence", END)
+
+    return graph.compile()
+
+
+week4_graph = build_week4_graph()
+
+
+# ---------------- Week 4 UI ----------------
+
+st.divider()
+st.subheader("Week 4 — Evidence Ledger")
+st.caption("Week 3 research → Evidence Extraction → SQLite Evidence Ledger")
+
+if st.button("Build Evidence Ledger", type="primary") and question.strip():
+    week4_state = {
+        "question": question.strip(),
+        "research_plan": [],
+        "research_results": [],
+        "response": "",
+        "evidence_records": [],
+    }
+
+    try:
+        with st.spinner("Researching and building the evidence ledger..."):
+            evidence_result = week4_graph.invoke(week4_state)
+    except Exception as error:
+        st.error(f"The Week 4 evidence workflow could not finish: {error}")
+    else:
+        st.subheader("New Evidence Records")
+        st.json(evidence_result["evidence_records"])
+
+        stored_records = load_evidence_records()
+        st.subheader("Evidence Ledger (SQLite)")
+        st.dataframe(stored_records, use_container_width=True)
+        st.caption(f"{len(stored_records)} evidence records stored in {EVIDENCE_DB}")
+
+
+"""
+ELP WEEK 5 — TEAM 1 — STUDENT CODE
+Single-agent report generation
+
+==================== EXACT SETUP INSTRUCTIONS ====================
+1. OPEN the SAME Streamlit Python file used for Weeks 3 and 4, for YOUR team.
+2. Make sure it already contains, IN THIS ORDER:
+     (a) the completed Week 3 application, imports, tools and graphs;
+     (b) the completed Week 4 evidence extension, including its Streamlit UI.
+3. Scroll to the VERY BOTTOM of that combined file, below the final Week 4
+   st.caption(...) / st.dataframe(...) line. Leave two blank lines.
+4. COPY EVERYTHING IN THIS WEEK 5 FILE, including its imports, and PASTE there.
+   Alternatively, if you already pasted a previous Week 5 extension, REPLACE
+   that old Week 5 extension; do NOT append two Week 5 copies.
+5. SAVE the combined file. Run it from a terminal with:
+     streamlit run YOUR_EXISTING_APP_FILE.py
+6. Enter a research question in the existing question input, then click
+   Run Full Report Pipeline in the new Week 5 section near the bottom.
+7. Check that the output displays a complete 10-section report AND that SQLite
+   contains both evidence and a saved report in the 'reports' table.
+
+IMPORTANT DEPENDENCIES:
+- This extension is NOT a standalone Python program. It expects Week 3/4 to
+  provide sqlite3, json, st, EVIDENCE_DB, question, call_model_json,
+  Week4ResearchState, StateGraph, START, END, and the nodes listed below.
+- Team 1 reuses: plan_node, research_node, evidence_node.
+- Team 2 reuses: supervisor_node, specialists_node, evidence_store_node.
+- Complete ALL Week 4 student TODOs first; unfinished Week 4 code prevents
+  Week 5 from obtaining evidence.
+- DO NOT mix Team 1 and Team 2 files: their graph state and node names differ.
+- This week keeps existing SQLite storage. It creates a SECOND table 'reports'
+  inside the SAME database file (not a separate database).
+- Existing Week 3 and Week 4 UI buttons are preserved. The Week 5 button is
+  the one that runs the complete new pipeline end-to-end.
+- You will need your existing LLM and search API configuration to make a live run.
+
+STUDENT WORK: Complete TODO 0 through TODO 5 in order. Functions marked pass are exercises and will not work until completed. Use the instructor file only for checking or teaching solutions.
+
+WEEK 5 TARGET: single-agent Planner → Research → Evidence → Report
+Deliverable: the first complete DRAFT report; automated citation verification and
+quality review are deliberately reserved for Week 6.
+==================================================================
+"""
+
+# UTC timestamp is used when each report is stored in SQLite.
+from datetime import datetime, timezone
+
+# ---------------- Week 5: Save reports in SQLite ----------------
+
+# WHAT THIS DOES — DATABASE SETUP: Creates reports table if missing; preserves all Week 4 evidence rows.
+def init_report_db():
+    with sqlite3.connect(EVIDENCE_DB) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question TEXT NOT NULL,
+                report_markdown TEXT NOT NULL,
+                evidence_count INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+
+
+# WHAT THIS DOES — DATABASE WRITE: Saves question, generated markdown, evidence count, timestamp; returns report ID.
+def save_report(question: str, report_markdown: str, evidence_count: int) -> int:
+    """Save one generated report and return its database id."""
+    # STUDENT: Replace the `pass` in this function with real code.
+    # TODO 0 — REPORT PERSISTENCE
+    # Insert the question, report_markdown, evidence_count, and current UTC time
+    # into the reports table using parameterized SQL.
+    # Return cursor.lastrowid.
+    pass
+
+
+# WHAT THIS DOES — DATABASE READ: Loads previously generated reports, most recent first, for the UI.
+def load_reports() -> list[dict]:
+    with sqlite3.connect(EVIDENCE_DB) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM reports ORDER BY id DESC").fetchall()
+        return [dict(row) for row in rows]
+
+
+init_report_db()  # Ensure reports table exists before any report is saved.
+
+
+# SHARED OUTPUT CONTRACT: Both teams use the SAME nine model-written sections;
+# Sources / References is appended in Python as section number ten.
+REPORT_SECTION_KEYS = [
+    ("executive_summary", "Executive Summary"),
+    ("key_findings", "Key Findings"),
+    ("competitor_comparison", "Competitor Comparison"),
+    ("market_industry_trends", "Market / Industry Trends"),
+    ("emerging_technologies", "Emerging Technologies"),
+    ("regulatory_developments", "Regulatory Developments"),
+    ("risks_opportunities", "Risks / Opportunities"),
+    ("recommended_next_steps", "Recommended Next Steps"),
+    ("limitations_information_gaps", "Limitations / Information Gaps"),
+]
+
+
+# MODEL INSTRUCTIONS: The model must work from evidence only and return structured JSON.
+# Week 6, not this file, handles independent citation validation and report review.
+REPORT_SYSTEM_PROMPT = """
+You are the report-generation stage inside a SINGLE AI research-agent workflow.
+
+Use ONLY the supplied structured Evidence Records as factual support.
+Return ONLY valid JSON with exactly these keys:
+{
+  "executive_summary": "...",
+  "key_findings": "...",
+  "competitor_comparison": "...",
+  "market_industry_trends": "...",
+  "emerging_technologies": "...",
+  "regulatory_developments": "...",
+  "risks_opportunities": "...",
+  "recommended_next_steps": "...",
+  "limitations_information_gaps": "..."
+}
+
+Rules:
+- Cite factual statements using evidence labels such as [E1].
+- Do not invent facts, dates, numbers, source names, URLs, or citations.
+- Clearly distinguish facts from analysis and recommendations.
+- If evidence is missing for a section, say so.
+- Do NOT build citation verification today. That is Week 6.
+""".strip()
+
+
+# WHAT THIS DOES — EVIDENCE PREP: Assigns [E1], [E2] labels to this run’s evidence, keeps sources and excerpts.
+def build_evidence_packet(evidence_records: list[dict]) -> list[dict]:
+    """Convert evidence records into compact numbered records for the report generator."""
+    packet = []
+    for index, record in enumerate(evidence_records, start=1):
+        packet.append({
+            "evidence_id": f"E{index}",
+            "claim": record.get("claim"),
+            "source": record.get("source"),
+            "url": record.get("url"),
+            "publication_date": record.get("publication_date"),
+            "source_type": record.get("source_type"),
+            "evidence": record.get("evidence"),
+            "confidence": record.get("confidence"),
+            "related_company": record.get("related_company"),
+            "report_section": record.get("report_section"),
+        })
+    return packet
+
+
+# WHAT THIS DOES — TEAM 1 MODEL STEP: Converts numbered records into nine narrative report sections.
+def generate_report(question: str, evidence_records: list[dict]) -> dict:
+    """Generate the report from evidence — not from the full conversation history."""
+    # STUDENT: Replace the `pass` below with the report-generation implementation.
+    # TODO 1 — REPORT GENERATION
+    # 1. Call build_evidence_packet(evidence_records).
+    # 2. Build a prompt containing the research question and json.dumps(...packet...).
+    # 3. Call call_model_json(REPORT_SYSTEM_PROMPT, prompt).
+    # 4. Make sure every key in REPORT_SECTION_KEYS exists.
+    # 5. Return the report dictionary.
+    pass
+
+
+# WHAT THIS DOES — REFERENCES: Creates citation legend from original URLs, not invented model references.
+def build_references(evidence_records: list[dict]) -> str:
+    """Build the source list directly from evidence so URLs are not invented by the model."""
+    lines = []
+    for index, record in enumerate(evidence_records, start=1):
+        source = record.get("source") or "Unknown source"
+        url = record.get("url") or "No URL"
+        date = record.get("publication_date") or "Date unavailable"
+        lines.append(f"- [E{index}] {source} — {date} — {url}")
+    return "\n".join(lines) if lines else "No source records were available."
+
+
+# WHAT THIS DOES — REPORT FORMAT: Assembles nine model sections and the tenth Sources / References section.
+def render_report_markdown(report: dict, evidence_records: list[dict]) -> str:
+    """Render all ten required report sections."""
+    blocks = []
+    for key, title in REPORT_SECTION_KEYS:
+        blocks.append(f"## {title}\n\n{report.get(key, '')}")
+    blocks.append("## Sources / References\n\n" + build_references(evidence_records))
+    return "\n\n".join(blocks)
+
+
+# TODO 2 — WEEK 5 STATE
+# Extend Week4ResearchState with:
+#     report: dict
+#     report_markdown: str
+#     report_id: int
+
+
+
+# WHAT THIS DOES — TEAM 1 GRAPH NODE: Runs model report generation, formats it, saves to SQLite.
+def report_node(state):
+    """Turn this run's evidence into a saved complete report."""
+    # TODO 3 — CONNECT EVIDENCE TO REPORT
+    # 1. Read state["evidence_records"].
+    # 2. Stop with a helpful error if it is empty.
+    # 3. Generate the report.
+    # 4. Render it as markdown.
+    # 5. Save it to SQLite.
+    # 6. Return report, report_markdown, and report_id.
+    pass
+
+
+# WHAT THIS DOES — WORKFLOW WIRING: Reuses Week 3/4 nodes and adds Week 5 report/synthesis at the end.
+def build_week5_graph():
+    """Question -> Planner -> Research -> Evidence -> Report -> END"""
+    # TODO 4 — EXTEND THE GRAPH
+    # Reuse plan_node, research_node, and evidence_node.
+    # Add report_node after evidence_node.
+    # Use your Week5ResearchState.
+    pass
+
+
+week5_graph = build_week5_graph()
+
+
+# ---------------- Week 5 UI ----------------
+# UI: Adds a separate Week 5 button and shows the report + evidence + saved history.
+# A full run invokes Week 3 planning/research, Week 4 evidence, THEN Week 5 writing.
+
+st.divider()
+st.subheader("Week 5 — Complete Report Pipeline")
+st.caption("Question → Planner → Research → Evidence Ledger → Report")
+
+if st.button("Run Full Report Pipeline", type="primary") and question.strip():
+    # TODO 5 — RUN THE COMPLETE PIPELINE
+    # Create the initial state, invoke week5_graph, and display:
+    #   - report_markdown with st.markdown(...)
+    #   - evidence records in an expander
+    #   - saved reports from SQLite in another expander
+    pass
+
