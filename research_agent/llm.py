@@ -18,6 +18,13 @@ class LLM(Protocol):
         """Return the model's plain-text reply to a single user prompt."""
 
 
+def _message_content(response) -> str:
+    content = response.choices[0].message.content
+    if content is None:
+        raise ValueError("Model returned no content.")
+    return content
+
+
 class DeepSeekLLM:
     def __init__(self, api_key: str, model: str = DEFAULT_MODEL, base_url: str = DEEPSEEK_BASE_URL):
         from openai import OpenAI
@@ -34,7 +41,7 @@ class DeepSeekLLM:
             ],
             response_format={"type": "json_object"},
         )
-        return json.loads(response.choices[0].message.content)
+        return json.loads(_message_content(response))
 
     def complete_text(self, prompt: str, temperature: Optional[float] = None) -> str:
         kwargs = {}
@@ -45,4 +52,4 @@ class DeepSeekLLM:
             messages=[{"role": "user", "content": prompt}],
             **kwargs,
         )
-        return response.choices[0].message.content
+        return _message_content(response)
