@@ -134,3 +134,7 @@ def main() -> None:
     render_research_section(question)
     render_evidence_section(question)
     render_report_section(question)
+
+
+if __name__ == "__main__":
+    main()
