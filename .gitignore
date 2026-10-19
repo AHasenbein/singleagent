@@ -1,3 +1,7 @@
 .env
 *.db
+<<<<<<< HEAD
 .DS_Store
+=======
+
+>>>>>>> 53e5b99 (Complete Week 5 report pipeline)
