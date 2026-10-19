@@ -480,6 +480,7 @@ if st.button("Research", type="primary") and question.strip():
 # ---------------- Week 4: Evidence & Traceability ----------------
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 EVIDENCE_DB = "team1_evidence.db"
 
@@ -507,47 +508,25 @@ def init_evidence_db():
 
 def save_evidence_records(records: list[dict]):
     """Save validated evidence records to SQLite."""
-    # TODO 0 — SAVE TO SQLITE
-    #
-    # Use sqlite3.connect(EVIDENCE_DB), then INSERT each record into the
-    # evidence table. Use parameterized SQL (?) values.
-    #
-    # Helpful columns:
-    #   claim, source, url, publication_date, source_type, evidence,
-    #   confidence, related_company, report_section
-    #
-    # Hint: INSERT OR IGNORE is useful because the table treats
-    # (claim, url) as a unique pair.
-    with sqlite3.connect(EVIDENCE_DB) as conn:
-        for record in records:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO evidence (
-                    claim,
-                    source,
-                    url,
-                    publication_date,
-                    source_type,
-                    evidence,
-                    confidence,
-                    related_company,
-                    report_section
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record.get("claim"),
-                    record.get("source"),
-                    record.get("url"),
-                    record.get("publication_date"),
-                    record.get("source_type"),
-                    record.get("evidence"),
-                    record.get("confidence"),
-                    record.get("related_company"),
-                    record.get("report_section"),
-                ),
-            )
+    columns = [
+        "claim",
+        "source",
+        "url",
+        "publication_date",
+        "source_type",
+        "evidence",
+        "confidence",
+        "related_company",
+        "report_section",
+    ]
+    rows = [tuple(record.get(col) for col in columns) for record in records]
 
+    with sqlite3.connect(EVIDENCE_DB) as conn:
+        conn.executemany(
+            f"INSERT OR IGNORE INTO evidence ({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            rows,
+        )
         conn.commit()
 
 
@@ -575,6 +554,7 @@ init_evidence_db()
 
 class Week4ResearchState(ResearchState):
     evidence_records: list[dict]
+
 
 EVIDENCE_SYSTEM_PROMPT = """
 You are the evidence extraction step in a business research workflow.
@@ -608,94 +588,81 @@ Rules:
 """.strip()
 
 
+def _extract_one(item: dict, result: dict) -> list[dict]:
+    """Ask the model for evidence records from a single source result."""
+    source_payload = {
+        "task": item.get("task"),
+        "source_type": item.get("source_type"),
+        "title": result.get("title"),
+        "url": result.get("url"),
+        "content": result.get("content"),
+        "published_date": result.get("published_date"),
+    }
+
+    try:
+        output = call_model_json(
+            EVIDENCE_SYSTEM_PROMPT,
+            json.dumps(source_payload, indent=2, default=str),
+        )
+    except Exception:
+        # One failed model call should not sink the whole ledger.
+        return []
+
+    extracted = output.get("records") if isinstance(output, dict) else None
+    if not isinstance(extracted, list):
+        return []
+
+    records = []
+    for record in extracted:
+        if not isinstance(record, dict):
+            continue
+        # Traceability: never let the model invent provenance.
+        record["url"] = source_payload["url"]
+        record["source"] = record.get("source") or source_payload["title"]
+        record["source_type"] = source_payload["source_type"]
+        record["publication_date"] = source_payload["published_date"]
+        if not record.get("related_company"):
+            record["related_company"] = item.get("ticker")
+        records.append(record)
+    return records
+
+
 def extract_evidence_records(research_results: list[dict]) -> list[dict]:
     """Turn Week 3 research results into structured evidence records."""
-    records = []
+    jobs = [
+        (item, result)
+        for item in research_results
+        for result in item.get("results", [])
+        if isinstance(result, dict) and "error" not in result
+    ]
 
-    # TODO 2 — EVIDENCE EXTRACTION
-    #
-    # For each research item in research_results:
-    #   1. Read its source_type and results.
-    #   2. Skip results that contain an "error".
-    #   3. For each source result, build a source_payload containing:
-    #        task, source_type, title, url, content, published_date
-    #   4. Ask call_model_json(...) to extract Evidence Records.
-    #   5. Add the returned records to records.
-    #
-    # Hint:
-    #   Use EVIDENCE_SYSTEM_PROMPT as the system prompt.
-    #   json.dumps(source_payload, indent=2, default=str) is useful.
-    #
-    # Important:
-    #   Do not invent source URLs or publication dates.
-    for item in research_results:
-        source_type = item.get("source_type")
-        task = item.get("task")
+    # Model calls are slow and independent, so run them in parallel.
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        batches = pool.map(lambda job: _extract_one(*job), jobs)
 
-        for result in item.get("results", []):
-            if "error" in result:
-                continue
-
-            source_payload = {
-                "task": task,
-                "source_type": source_type,
-                "title": result.get("title"),
-                "url": result.get("url"),
-                "content": result.get("content"),
-                "published_date": result.get("published_date"),
-            }
-
-            output = call_model_json(
-                EVIDENCE_SYSTEM_PROMPT,
-                json.dumps(source_payload, indent=2, default=str),
-            )
-
-            extracted = output.get("records", [])
-
-            if isinstance(extracted, list):
-                records.extend(extracted)
-
-    return records
+    return [record for batch in batches for record in batch]
 
 
 def validate_evidence_records(records: list[dict]) -> list[dict]:
     """Keep only records with the minimum Week 4 evidence fields."""
-    required = ["claim", "source", "url", "publication_date", "source_type", "evidence"]
+    required = ["claim", "source", "url", "source_type", "evidence"]
 
     validated = []
-
-    # TODO 3 — VALIDATION + DUPLICATES
-    #
-    # Keep a record only if:
-    #   - it is a dictionary
-    #   - claim, source, url, source_type, and evidence are non-empty
-    #
-    # Remove exact duplicates using:
-    #   (claim.lower(), url)
-    #
-    # Hint:
-    #   Use a set called seen.
     seen = set()
 
     for record in records:
         if not isinstance(record, dict):
             continue
-
-        claim = str(record.get("claim", "")).strip()
-        source = str(record.get("source", "")).strip()
-        url = str(record.get("url", "")).strip()
-        source_type = str(record.get("source_type", "")).strip()
-        evidence = str(record.get("evidence", "")).strip()
-
-        if not claim or not source or not url or not source_type or not evidence:
+        if not all(str(record.get(field) or "").strip() for field in required):
             continue
 
-        duplicate_key = (claim.lower(), url)
-
-        if duplicate_key in seen:
+        key = (record["claim"].strip().lower(), record["url"].strip())
+        if key in seen:
             continue
+        seen.add(key)
 
-        seen.add(duplicate_key)
+        if record.get("confidence") not in {"high", "medium", "low"}:
+            record["confidence"] = None
         validated.append(record)
 
     return validated
@@ -703,19 +670,10 @@ def validate_evidence_records(records: list[dict]) -> list[dict]:
 
 def evidence_node(state: ResearchState) -> dict:
     """Week 4: extract, validate, and persist evidence from Week 3 research."""
-    # TODO 4 — CONNECT WEEK 3 TO WEEK 4 + DATABASE
-    #
-    # 1. Extract raw records from state["research_results"].
-    # 2. Validate them.
-    # 3. Save validated records to SQLite.
-    # 4. Return them under the key "evidence_records".
     raw_records = extract_evidence_records(state["research_results"])
-
-    validated_records = validate_evidence_records(raw_records)
-
-    save_evidence_records(validated_records)
-
-    return {"evidence_records": validated_records}
+    validated = validate_evidence_records(raw_records)
+    save_evidence_records(validated)
+    return {"evidence_records": validated}
 
 
 def build_week4_graph():
@@ -726,17 +684,6 @@ def build_week4_graph():
     """
     graph = StateGraph(Week4ResearchState)
 
-    # TODO 5 — GRAPH CONNECTION
-    #
-    # Reuse the Week 3 nodes:
-    #   plan_node
-    #   research_node
-    #
-    # Add the new Week 4 node:
-    #   evidence_node
-    #
-    # Then connect:
-    #   START -> plan -> research -> evidence -> END
     graph.add_node("plan", plan_node)
     graph.add_node("research", research_node)
     graph.add_node("evidence", evidence_node)
@@ -811,7 +758,6 @@ def init_report_db():
 # WHAT THIS DOES — DATABASE WRITE: Saves question, generated markdown, evidence count, timestamp; returns report ID.
 def save_report(question: str, report_markdown: str, evidence_count: int) -> int:
     """Save one generated report and return its database id."""
-    # STUDENT: Replace the `pass` in this function with real code.
     # TODO 0 — REPORT PERSISTENCE
     # Insert the question, report_markdown, evidence_count, and current UTC time
     # into the reports table using parameterized SQL.
@@ -923,7 +869,6 @@ def build_evidence_packet(evidence_records: list[dict]) -> list[dict]:
 # WHAT THIS DOES — TEAM 1 MODEL STEP: Converts numbered records into nine narrative report sections.
 def generate_report(question: str, evidence_records: list[dict]) -> dict:
     """Generate the report from evidence — not from the full conversation history."""
-    # STUDENT: Replace the `pass` below with the report-generation implementation.
     # TODO 1 — REPORT GENERATION
     # 1. Call build_evidence_packet(evidence_records).
     # 2. Build a prompt containing the research question and json.dumps(...packet...).
@@ -1007,7 +952,7 @@ class Week5ResearchState(Week4ResearchState):
 
 
 # WHAT THIS DOES — TEAM 1 GRAPH NODE: Runs model report generation, formats it, saves to SQLite.
-def report_node(state):
+def report_node(state: Week5ResearchState) -> dict:
     """Turn this run's evidence into a saved complete report."""
     # TODO 3 — CONNECT EVIDENCE TO REPORT
     # 1. Read state["evidence_records"].

@@ -2,6 +2,12 @@
 *.db
 <<<<<<< HEAD
 .DS_Store
+<<<<<<< HEAD
 =======
 
 >>>>>>> 53e5b99 (Complete Week 5 report pipeline)
+=======
+__pycache__/
+*.pyc
+.playwright-mcp/
+>>>>>>> 7709d353f3f898b1acfe739249cd74c500adfac0
