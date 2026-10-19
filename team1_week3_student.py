@@ -1108,6 +1108,64 @@ if st.button("Run Full Report Pipeline", type="primary") and question.strip():
         st.error(f"The Week 5 pipeline could not finish: {error}")
 
     else:
+        evidence_records = result["evidence_records"]
+
+        unique_sources = {
+            record.get("url")
+            for record in evidence_records
+            if record.get("url")
+        }
+
+        web_count = sum(
+            1 for record in evidence_records
+            if record.get("source_type") == "web"
+        )
+
+        financial_count = sum(
+            1 for record in evidence_records
+            if record.get("source_type") == "financials"
+        )
+
+        filings_count = sum(
+            1 for record in evidence_records
+            if record.get("source_type") == "filings"
+        )
+
+        high_confidence = sum(
+            1 for record in evidence_records
+            if record.get("confidence") == "high"
+        )
+
+        medium_confidence = sum(
+            1 for record in evidence_records
+            if record.get("confidence") == "medium"
+        )
+
+        low_confidence = sum(
+            1 for record in evidence_records
+            if record.get("confidence") == "low"
+        )
+
+        st.subheader("Research Dashboard")
+
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric("Evidence Records", len(evidence_records))
+        col2.metric("Unique Sources", len(unique_sources))
+        col3.metric("SEC Filings", filings_count)
+
+        col4, col5, col6 = st.columns(3)
+
+        col4.metric("Web Evidence", web_count)
+        col5.metric("Financial Evidence", financial_count)
+        col6.metric("High Confidence", high_confidence)
+
+        st.caption(
+            f"Confidence breakdown: "
+            f"{high_confidence} high, "
+            f"{medium_confidence} medium, "
+            f"{low_confidence} low"
+        )
         st.subheader("Generated Report")
         st.markdown(result["report_markdown"])
 
