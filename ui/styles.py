@@ -7,15 +7,12 @@ def apply_styles() -> None:
     st.markdown(
         """
         <style>
+        /* Theme-neutral: translucent greys read correctly on both light and
+           dark Streamlit themes, so text keeps the theme's own color. */
         :root {
-            --ink: #20302b;
-            --muted: #64736d;
             --accent: #c65037;
-            --line: #dce5df;
-            --surface: #f3f7f3;
-        }
-        .stApp {
-            color: var(--ink);
+            --line: rgba(128, 128, 128, 0.25);
+            --surface: rgba(128, 128, 128, 0.08);
         }
         [data-testid="stSidebar"] {
             background: var(--surface);
