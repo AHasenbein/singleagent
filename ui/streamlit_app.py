@@ -78,7 +78,7 @@ def render_evidence_section(question: str) -> None:
     st.subheader("Evidence ledger")
     if stored_records:
         render_dashboard(stored_records)
-        st.dataframe(stored_records, use_container_width=True, hide_index=True)
+        st.dataframe(stored_records, width="stretch", hide_index=True)
     else:
         st.info("No evidence has been saved yet. Build a ledger to get started.")
     st.caption(f"{len(stored_records)} records · SQLite: {store.db_path}")
