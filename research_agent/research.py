@@ -2,11 +2,12 @@
 plain-language response written from those results."""
 
 import json
-from typing import List
+import time
+from typing import Callable, List
 
 from .llm import LLM
 from .tools import ResearchTools
-from .types import PlanTask, ResearchItem
+from .types import PlanTask, ResearchItem, SourceResult
 
 RESPONSE_PROMPT_TEMPLATE = """
 You are the response step in a single-agent business research workflow.
@@ -25,20 +26,51 @@ Planner research results:
 """.strip()
 
 
-def run_research(plan: List[PlanTask], tools: ResearchTools) -> List[ResearchItem]:
-    """Execute the Planner's FULL plan with the appropriate research tool."""
-    research_results = []
-    for item in plan:
-        ticker = item.get("ticker")
-        research_results.append(
-            {
-                "task": item["task"],
-                "source_type": item["source_type"],
-                "ticker": ticker,
-                "results": tools.run(item["source_type"], item["task"], ticker),
-            }
-        )
-    return research_results
+RETRY_DELAY_SECONDS = 1.0
+TRANSIENT_HTTP_STATUSES = {429, 500, 502, 503, 504}
+
+
+def is_transient(error: Exception) -> bool:
+    """Rate limits, 5xx responses, timeouts and connection drops are worth one retry."""
+    status = getattr(getattr(error, "response", None), "status_code", None)
+    if status is not None:
+        return status in TRANSIENT_HTTP_STATUSES
+    # requests' ConnectionError/Timeout are OSError subclasses; so is TimeoutError.
+    return isinstance(error, OSError)
+
+
+def run_task(
+    tools: ResearchTools, item: PlanTask, sleep: Callable[[float], None] = time.sleep
+) -> List[SourceResult]:
+    """Run one task; a tool failure becomes an error result instead of an exception."""
+    def attempt() -> List[SourceResult]:
+        return tools.run(item["source_type"], item["task"], item.get("ticker"))
+
+    try:
+        try:
+            return attempt()
+        except Exception as error:
+            if not is_transient(error):
+                raise
+            sleep(RETRY_DELAY_SECONDS)
+            return attempt()
+    except Exception as error:
+        return [{"error": f"{type(error).__name__}: {error}"}]
+
+
+def run_research(
+    plan: List[PlanTask], tools: ResearchTools, sleep: Callable[[float], None] = time.sleep
+) -> List[ResearchItem]:
+    """Execute the Planner's FULL plan; one failing tool does not abort the others."""
+    return [
+        {
+            "task": item["task"],
+            "source_type": item["source_type"],
+            "ticker": item.get("ticker"),
+            "results": run_task(tools, item, sleep),
+        }
+        for item in plan
+    ]
 
 
 def write_response(llm: LLM, question: str, research_results: List[ResearchItem]) -> str:

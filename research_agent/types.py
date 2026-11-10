@@ -41,6 +41,19 @@ class EvidenceRecord(TypedDict, total=False):
     report_section: Optional[str]
 
 
+class CoverageEntry(TypedDict):
+    """Per plan task: what was attempted, what failed, and what survived."""
+
+    task: str
+    source_type: str
+    ticker: Optional[str]
+    sources_attempted: int
+    tool_errors: List[str]
+    extraction_failures: int  # model call failed or returned no "records" list
+    ungrounded_dropped: int  # passage not found in the source content
+    records: int  # validated records in the final evidence list
+
+
 EVIDENCE_COLUMNS = [
     "claim",
     "source",

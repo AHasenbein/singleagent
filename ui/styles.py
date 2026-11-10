@@ -40,6 +40,18 @@ def apply_styles() -> None:
         [data-baseweb="tab"][aria-selected="true"] {
             color: var(--accent);
         }
+        /* History: compact, left-aligned entries */
+        [data-testid="stSidebar"] .stButton > button {
+            justify-content: flex-start;
+            text-align: left;
+            min-height: 0;
+            padding: 0.45rem 0.7rem;
+            font-weight: 500;
+        }
+        [data-testid="stSidebar"] .stButton > button p {
+            font-size: 0.85rem;
+            line-height: 1.35;
+        }
         [data-testid="stMetric"] {
             background: var(--surface);
             border: 1px solid var(--line);

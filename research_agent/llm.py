@@ -18,6 +18,29 @@ class LLM(Protocol):
         """Return the model's plain-text reply to a single user prompt."""
 
 
+def parse_json_object(text: str) -> dict:
+    """Parse the single JSON object in a model reply.
+
+    Code fences and leading prose before the first "{" are tolerated. Anything
+    other than whitespace after the object (a second object, trailing text) is
+    rejected: `{"status": "PASS"} {"status": "FAIL"}` must not read as PASS.
+    """
+    text = (text or "").strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+    if text.rstrip().endswith("```"):
+        text = text.rstrip()[:-3]
+    start = text.find("{")
+    if start == -1:
+        raise ValueError("Model reply contained no JSON object.")
+    value, end = json.JSONDecoder().raw_decode(text, start)
+    if text[end:].strip():
+        raise ValueError("Model reply had content after the JSON object.")
+    if not isinstance(value, dict):
+        raise ValueError("Model reply was not a JSON object.")
+    return value
+
+
 def _message_content(response) -> str:
     content = response.choices[0].message.content
     if content is None:
@@ -32,16 +55,22 @@ class DeepSeekLLM:
         self._client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
 
-    def complete_json(self, system_prompt: str, user_text: str) -> dict:
-        response = self._client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_text},
-            ],
-            response_format={"type": "json_object"},
-        )
-        return json.loads(_message_content(response))
+    def complete_json(self, system_prompt: str, user_text: str, attempts: int = 2) -> dict:
+        """JSON reply; retries once if the model returns unparseable output."""
+        for attempt in range(attempts):
+            response = self._client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_text},
+                ],
+                response_format={"type": "json_object"},
+            )
+            try:
+                return parse_json_object(_message_content(response))
+            except ValueError:  # json.JSONDecodeError is a ValueError
+                if attempt == attempts - 1:
+                    raise
 
     def complete_text(self, prompt: str, temperature: Optional[float] = None) -> str:
         kwargs = {}

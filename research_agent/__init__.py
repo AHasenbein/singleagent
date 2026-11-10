@@ -1,4 +1,4 @@
-"""Team 1 AI research agent: Planner -> Research -> Evidence -> Report.
+"""Team 1 AI research agent: Planner -> Research -> Evidence -> Report -> Verification.
 
 Modules, in pipeline order:
     planner   - break a question into source-typed research tasks
@@ -6,6 +6,8 @@ Modules, in pipeline order:
     research  - run the plan through the tools; Week 3 plain response
     evidence  - extract and validate traceable evidence records
     report    - write and render the ten-section report
+    verification - citation checks and the final quality gate
+    followup  - evidence-first follow-up answers (one bounded research pass)
     storage   - SQLite evidence ledger and saved reports
     pipeline  - LangGraph workflows wiring the stages together
 

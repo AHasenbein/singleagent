@@ -11,14 +11,15 @@ from typing import Dict, List, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from .config import Settings
-from .evidence import extract_evidence, validate_evidence
+from .evidence import build_evidence
 from .llm import LLM
 from .planner import plan_question
 from .report import generate_report, render_report_markdown
 from .research import run_research, write_response
 from .storage import ResearchStore
+from .verification import verify_and_revise
 from .tools import ResearchTools
-from .types import EvidenceRecord, PlanTask, ResearchItem
+from .types import CoverageEntry, EvidenceRecord, PlanTask, ResearchItem
 
 
 # LangGraph resolves these annotations at runtime, so they must stay
@@ -32,12 +33,18 @@ class ResearchState(TypedDict):
 
 class EvidenceState(ResearchState):
     evidence_records: List[EvidenceRecord]
+    coverage: List[CoverageEntry]  # per plan task: attempted, failed, records kept
 
 
 class ReportState(EvidenceState):
     report: Dict[str, str]
     report_markdown: str
     report_id: int
+
+
+class VerifiedReportState(ReportState):
+    verification: Dict
+    final_report_markdown: str
 
 
 @dataclass
@@ -72,24 +79,45 @@ def _nodes(services: Services) -> dict:
         return {"response": write_response(services.llm, state["question"], state["research_results"])}
 
     def evidence(state: EvidenceState) -> dict:
-        """Extract, validate, and persist evidence from the research results."""
-        records = validate_evidence(extract_evidence(services.llm, state["research_results"]))
+        """Extract, ground-check, validate, and persist evidence from the research results."""
+        records, coverage = build_evidence(services.llm, state["research_results"])
         services.store.save_evidence(records)
-        return {"evidence_records": records}
+        return {"evidence_records": records, "coverage": coverage}
 
     def report(state: ReportState) -> dict:
-        """Turn this run's evidence into a saved complete report."""
+        """Turn this run's evidence into a report, saved as 'pending' until verified."""
         records = state.get("evidence_records") or []
+        coverage = state.get("coverage") or []
         if not records:
             raise ValueError(
                 "No evidence records were extracted for this question, so no report "
                 "can be written. Try a more specific question or check the research tools."
             )
 
-        sections = generate_report(services.llm, state["question"], records)
-        markdown = render_report_markdown(sections, records)
-        report_id = services.store.save_report(state["question"], markdown, len(records))
+        sections = generate_report(services.llm, state["question"], records, coverage)
+        markdown = render_report_markdown(sections, records, coverage)
+        report_id = services.store.save_report(
+            state["question"], markdown, len(records), status="pending", evidence_records=records
+        )
         return {"report": sections, "report_markdown": markdown, "report_id": report_id}
+
+    def verify(state: VerifiedReportState) -> dict:
+        """Quality gate with bounded self-revision; only a PASS report becomes final."""
+        records = state["evidence_records"]
+        sections, verification = verify_and_revise(services.llm, state["report"], records)
+        markdown = state["report_markdown"]
+        if verification["revisions"]:
+            markdown = render_report_markdown(sections, records, state.get("coverage") or [])
+        passed = verification["overall_status"] == "PASS"
+        services.store.finalize_report(
+            state["report_id"], markdown, "PASS" if passed else "FAIL", verification, records
+        )
+        return {
+            "report": sections,
+            "report_markdown": markdown,
+            "verification": verification,
+            "final_report_markdown": markdown if passed else "",
+        }
 
     return {
         "plan": plan,
@@ -97,6 +125,7 @@ def _nodes(services: Services) -> dict:
         "respond": respond,
         "evidence": evidence,
         "report": report,
+        "verify": verify,
     }
 
 
@@ -130,14 +159,25 @@ def build_report_graph(services: Services):
     return _linear_graph(ReportState, services, ["plan", "research", "evidence", "report"])
 
 
+def build_verified_report_graph(services: Services):
+    """Week 6+: Question -> Planner -> Research -> Evidence -> Report -> Verification."""
+    return _linear_graph(
+        VerifiedReportState, services, ["plan", "research", "evidence", "report", "verify"]
+    )
+
+
 # ---------------- Initial states ----------------
 def initial_research_state(question: str) -> ResearchState:
     return {"question": question, "research_plan": [], "research_results": [], "response": ""}
 
 
 def initial_evidence_state(question: str) -> EvidenceState:
-    return {**initial_research_state(question), "evidence_records": []}
+    return {**initial_research_state(question), "evidence_records": [], "coverage": []}
 
 
 def initial_report_state(question: str) -> ReportState:
     return {**initial_evidence_state(question), "report": {}, "report_markdown": "", "report_id": 0}
+
+
+def initial_verified_report_state(question: str) -> VerifiedReportState:
+    return {**initial_report_state(question), "verification": {}, "final_report_markdown": ""}
